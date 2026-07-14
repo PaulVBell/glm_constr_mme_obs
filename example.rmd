@@ -1,0 +1,360 @@
+---
+title: "Constraining GLM trends from MMEs using observations"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(cmdstanr)
+library(bayesplot)
+```
+
+# Introduction
+
+# Method
+
+We have a set of $m$ climate simulations, $x^j$ with $j = 1,.., m$.
+Each $x^j$ is a timeseries of a climate variable available in the historical period and the future.
+We also have a set of observations $z$ which are only available in the historical period.
+
+The observations are distributed as a glm with some location parameter $\nu_z$:
+
+\begin{equation}
+\label{eqn:poissglmz}
+    z_t | \nu(t) \sim \text{GLM}(\nu_z(t)), \qquad t = t_1, ... t_{n_h},
+\end{equation}
+\begin{equation}
+    g(\nu_{z}(t)) = a_1 + a_2 t.
+\end{equation}
+
+The climate simulations have mean $\nu_{x^j}$:
+
+\begin{equation}
+\label{eqn:poissglmx}
+    x_t^j | \nu_{x^j}(t) \sim \text{GLM}(\nu_{x^j}(t)), \qquad t = t_1, ... t_{n_f}.
+\end{equation}
+\begin{equation}
+    g(\nu_{x^j}(t)) = b^j_1 + b^j_2 t, \qquad j = 1, ..., m.
+\end{equation}
+
+We can approximate these to:
+
+\begin{equation}
+    \hat{b}^j \sim MVN(b^j, Var(\hat{b}^j)), \qquad j = 1, ..., m.
+\end{equation}
+\begin{equation}
+    \hat{a}\sim MVN(a, Var(\hat{a})).
+\end{equation}
+
+Where $\hat{a}$ and $Var(\hat{a})$ are the MLE and Covariance matrix of the MLE for regression parameters $a = (a_1, a_2)^T$.
+
+Then assuming a Gaussian latent model:
+\begin{equation}
+    b^j | \mu, \Sigma \sim MVN(\mu, \Sigma), \qquad j = 1, ..., m.
+\end{equation}
+
+To relate $a$ to $b^j$ use:
+\begin{equation}
+    b^0 | \mu, \Sigma \sim MVN(\mu, \Sigma).
+\end{equation}
+\begin{equation}
+    a = b^0 + w,
+\end{equation}
+where: 
+\begin{equation}
+    w | \Gamma \sim MVN(0, \Gamma),
+\end{equation}
+and $\Gamma$ is defined in terms of $\Sigma$ and $\delta = (\delta_1,\delta_2)^T$, the similarity parameters:
+\begin{equation}
+    \Gamma_{ll} = \Sigma_{ll} \frac{\delta_l - 1}{\delta_l}, \qquad l = 1,2,
+\end{equation}
+$\Gamma_{1,2} = \Gamma_{2,1} = 0$.
+
+When $\delta = 1$ $\Gamma = 0$ and as $\delta \rightarrow 0$ $\Gamma \rightarrow \infty$.
+
+We can then either fix $\delta$ or have a prior distribution over it:
+
+\begin{equation}
+    \delta_{l} \sim Beta(\theta^{(1)}_l,\theta^{(1)}_l), \qquad l = 1,2.
+\end{equation}
+
+If we want priors on $\mu$ and $\Sigma$:
+
+\begin{equation}
+    \mu \sim N(\mu_\mu, \sigma_\mu),
+\end{equation}
+\begin{equation}
+    \Omega \sim LKJ(\eta),
+\end{equation}
+\begin{equation}
+    \tau \sim \text{half-Cauchy}(0, \gamma),
+\end{equation}
+\begin{equation}
+    \Sigma = \text{diag}(\tau)\Omega \text{diag}(\tau).
+\end{equation}
+
+# Simulated data
+
+Lets set up the time covariate, t in years, which we rescale to t_sc.
+
+```{r}
+start_date <- 1980
+end_hist <- 2014
+end_date <- 2100
+nh <- end_hist - start_date + 1
+nf <- end_date - start_date + 1
+t <- seq(start_date, end_date, length.out = nf)
+t_sc <- (t - start_date)/(nf - 1)
+```
+
+Lets generate some simulated regression parameters (intercepts and slopes) where we know the true $\Sigma$, $\mu$ and $w$.
+
+```{r}
+m = 20 # number of simulations
+set.seed(1234)
+
+Sigma_true <- cbind(c(.02,-.01),c(-.01,.2))
+mu_true <- cbind(2, 0)
+L_true <- t(chol(Sigma_true))
+
+ # The true simulation regression parameters
+b_true <- matrix(rep(mu_true, m), nrow = 2) + L_true %*% matrix(rnorm(m * 2), nrow = 2)
+w_true <- c(0.5,-0.3)
+
+# The true real world regression parameters
+a_true <- as.numeric(mu_true) + L_true %*% rnorm(2) + w_true 
+
+print("mu is:")
+print(mu_true)
+print("Sigma is:")
+print(Sigma_true)
+```
+
+Now lets simulate the data as a Poisson distributed GLM.
+
+```{r}
+B <- cbind(rep(1, nf), t_sc)
+
+X <- matrix(rpois(n = m * nf, exp(as.numeric(B %*% b_true))),ncol = m)
+
+z <- rpois(nh, exp(as.numeric(B[1:nh,] %*% a_true)))
+```
+
+And put into a data frame:
+
+```{r}
+data_df <- data.frame(X) %>%
+    mutate(t_sc = t_sc, t = t) %>%
+    pivot_longer(-c(t_sc, t),names_to="model", names_prefix="X") %>%
+    bind_rows(
+        data.frame(value = z, t_sc = t_sc[1:nh], t = t[1:nh], model = "obs")
+    )
+```
+
+Lets plot this data
+
+```{r}
+data_df %>%
+    ggplot(aes(x = t, y = value)) +
+    geom_line() +
+    facet_wrap(~model)
+```
+
+# Fitting the model
+
+We first need to fit a GLM to all the simulation time series and the observed time series.
+
+```{r}
+fit_list <- list()
+for(j in 1:m){
+        fit_list[[j]] <- glm(
+            value ~ t_sc,
+            poisson(link = "log"),
+            filter(data_df, model == j)
+        )
+}
+a_fit <- glm(value ~ t_sc, poisson(link = "log"), filter(data_df, model == "obs"))
+```
+
+Then we need to get the MLEs for the regression parameters and the lower Cholesky decomposition of their covariance matrices.
+
+```{r}
+b_hat <- matrix(ncol = 2, nrow = m)
+J <- array(0, dim = c(m, 2, 2))
+for(j in 1:m){
+    b_hat[j,] <- fit_list[[j]]$coef
+    J[j,,] <- t(chol(vcov(fit_list[[j]])))
+}
+a_hat <- a_fit$coef
+J_a <- t(chol(vcov(a_fit)))
+```
+
+Then we create a data_list to pass to cmdstan.
+In this case if len_hyper_param is 0 and the length of the prior_hyper_param vector is 0, the stan code assumes infinite uniform priors for $\mu$ and $\Sigma$.
+
+Lets choose the $\delta_1 = \delta_2 = 1$ case.
+
+```{r}
+prior_hyper_param = numeric()              # an empty vector will result in no priors
+# prior_hyper_param = c(
+#     mu_mu_1 = 0,
+#     mu_mu_2 = 0,
+#     mu_sd_1 = 10,
+#     mu_sd_2 = 5,
+#     eta = 2,
+#     gam = 2.5
+# )    # an length 6 vector of prior hyper parameters
+
+data_list <- list(
+    len_a = 2,
+    m = m,
+    b_hat = b_hat,
+    a_hat = a_hat,
+    J = J,
+    J_a = J_a,
+    len_hyper_param = length(prior_hyper_param),
+    hyper_param = prior_hyper_param,
+    delta_hyper_param = c(1,1,1,1),        # Prior parameters for delta ~ Beta() prior
+    delta = c(1,1)                         # Fixed values of delta
+)
+```
+
+```{r}
+# This stan model fits the hierarchical model for a fixed delta
+mod <- cmdstan_model("stan/glm_constr_mme_obs_fixed_delta.stan")
+
+fit_fixed_delta <- mod$sample(
+    data = data_list,
+    seed = 1234,
+    iter_warmup = 1000,
+    iter_sampling = 1000,
+    chains = 4,
+    parallel_chains = 4,
+    refresh = 0,
+    show_exceptions = FALSE
+)
+```
+
+Lets look at the intercept and slope predicted for the MME of climate simulations ($b_{mme} \sim MVN(\mu, \Sigma)$), the observations independent of the MME ($a_{ind} \sim MVN(\hat{a}, Var(\hat{a}))$) and the posterior from the model ($a$):
+
+```{r, echo=FALSE}
+fit_fixed_delta$draws(c("a", "b_mme", "a_ind"), format = "df") %>%
+    pivot_longer(contains("["), names_to = c("param", "comp"), names_pattern = "(.+)\\[(.)\\]") %>%
+    mutate(comp = c("Intercept","Slope")[as.integer(comp)]) %>%
+    ggplot(aes(x = value)) +
+    geom_density(aes(colour = param, fill = param), alpha = .2) +
+    labs(x = NULL, y = NULL) +
+    scale_colour_manual(name = NULL, values = c(`a` = "blue", `a_ind` = "orange", `b_mme` = "black")) +
+    scale_fill_manual(name = NULL, values = c(`a` = "blue", `a_ind` = "orange", `b_mme` = "black")) +
+    facet_wrap(~comp, scales = "free_x")
+```
+
+Let now consider a number of different $\delta$ values.
+Note the model cannot accept a value of $\delta = 0$.
+
+```{r}
+deltas = c(0.001,seq(.25,1,.25))
+delta_mat <- cbind(rep(deltas, 5),rep(deltas, each = 5))
+delta_mat
+```
+
+```{r}
+prior_hyper_param = numeric()              # an empty vector will result in no priors
+prior_hyper_param = c(
+    mu_mu_1 = 0,
+    mu_mu_2 = 0,
+    mu_sd_1 = 10,
+    mu_sd_2 = 5,
+    eta = 2,
+    gam = 2.5
+)    # an length 6 vector of prior hyper parameters
+
+data_list_mult_delta <- list(
+    len_a = 2,
+    m = m,
+    b_hat = b_hat,
+    a_hat = a_hat,
+    J = J,
+    J_a = J_a,
+    len_hyper_param = length(prior_hyper_param),
+    hyper_param = prior_hyper_param,
+    n_delta = nrow(delta_mat),
+    delta = delta_mat                                 # Fixed values of delta
+)
+```
+
+```{r}
+# This stan model fits the hierarchical model for a set of fixed deltas.
+mod <- cmdstan_model("stan/glm_constr_mme_obs_fixed_delta_vector.stan")
+
+fit_fixed_delta_mult_delta <- mod$sample(
+    data = data_list_mult_delta,
+    seed = 1234,
+    iter_warmup = 1000,
+    iter_sampling = 1000,
+    chains = 4,
+    parallel_chains = 4,
+    refresh = 0,
+    show_exceptions = FALSE
+)
+```
+
+Lets use precentage change from the start of the time period to the end of the time period (t_sc = 0, t = 1980 to t_sc = 1980, t = 2100) as an interesting example: 
+
+\begin{align}
+    100\%\frac{E(z|t = 2100) - E(z|t = 1980)}{E(z|t = 1980)} &=  100\%\frac{\text{exp}(a_1 + a_2) - \text{exp}(a_1)}{\text{exp}(a_1)} \\
+    &= 100\%(\text{exp}(a_2) - 1) 
+\end{align}
+
+Plotting for the different choices of $\delta$
+
+```{r, echo=FALSE}
+fit_fixed_delta_mult_delta$draws(c("a"), format="df") %>% 
+    pivot_longer(contains("["), values_to = "a", names_to = c("index","comp"), names_pattern = "\\[(.+)\\,(.)\\]", names_transform=list(index = as.integer,comp = as.integer)) %>%
+    mutate(delta_1 = delta_mat[index,1], delta_2 = delta_mat[index,2]) %>%
+    filter(comp == 2) %>%
+    mutate(pcnt_diff = 100 * (exp(a) - 1)) %>%
+    ggplot() +
+    geom_density(aes(x = pcnt_diff)) +
+    xlim(-100,100) +
+    labs(x = "% difference between start and end", y = NULL) +
+    facet_grid("delta_1" + factor(delta_1, levels=rev(deltas))~"delta_2" + delta_2)
+
+```
+
+Finally we can sample from the posterior given a prior on $\delta$!
+
+Here we do a uniform prior $\delta_l \sim \text{Unif}(0,1), l = 1,2$: 
+
+```{r}
+mod <- cmdstan_model("stan/glm_constr_mme_obs.stan")
+
+fit_prior_on_delta <- mod$sample(
+    data = data_list,
+    seed = 1234,
+    iter_warmup = 1000,
+    iter_sampling = 1000,
+    chains = 4,
+    parallel_chains = 4,
+    refresh = 0,
+    show_exceptions = FALSE
+)
+```
+
+```{r, echo=FALSE}
+fit_prior_on_delta$draws(c("a", "b_mme", "a_ind"), format = "df") %>%
+    pivot_longer(contains("["), names_to = c("param", "comp"), names_pattern = "(.+)\\[(.)\\]") %>%
+    mutate(comp = c("Intercept","Slope")[as.integer(comp)]) %>%
+    ggplot(aes(x = value)) +
+    geom_density(aes(colour = param, fill = param), alpha = .2) +
+    labs(x = NULL, y = NULL) +
+    scale_colour_manual(name = NULL, values = c(`a` = "blue", `a_ind` = "orange", `b_mme` = "black")) +
+    scale_fill_manual(name = NULL, values = c(`a` = "blue", `a_ind` = "orange", `b_mme` = "black")) +
+    facet_wrap(~comp, scales = "free_x")
+```
+
+```{r, echo=FALSE}
+mcmc_areas(fit_prior_on_delta$draws("delta"))
+```
+

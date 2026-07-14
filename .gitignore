@@ -1,0 +1,12 @@
+# Code to ignore stan compilation files
+# ignore *everything*
+*
+!/**/
+# 'unignore' anything with an extension. i.e not including stan compilation files.
+!*.*
+# Ignore temporary files created as part of compilation.
+*.hpp
+*.o
+
+# Ignore vscode files
+.vscode
