@@ -10,3 +10,4 @@
 
 # Ignore vscode files
 .vscode
+.Rproj.user
