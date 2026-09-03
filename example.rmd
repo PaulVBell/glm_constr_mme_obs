@@ -261,14 +261,14 @@ delta_mat
 
 ```{r}
 prior_hyper_param = numeric()              # an empty vector will result in no priors
-prior_hyper_param = c(
-    mu_mu_1 = 0,
-    mu_mu_2 = 0,
-    mu_sd_1 = 10,
-    mu_sd_2 = 5,
-    eta = 2,
-    gam = 2.5
-)    # an length 6 vector of prior hyper parameters
+# prior_hyper_param = c(
+#     mu_mu_1 = 0,
+#     mu_mu_2 = 0,
+#     mu_sd_1 = 10,
+#     mu_sd_2 = 5,
+#     eta = 2,
+#     gam = 2.5
+# )    # an length 6 vector of prior hyper parameters
 
 data_list_mult_delta <- list(
     len_a = 2,

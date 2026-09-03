@@ -38,10 +38,10 @@ transformed parameters {
 
 model {
     // Priors
-    if(len_hyper_param == 6){
-        target+= normal_lpdf(mu | hyper_param[1:2], hyper_param[3:4]);
-        target+= lkj_corr_cholesky_lpdf(L | hyper_param[5]);
-        target+= cauchy_lpdf(tau |0, hyper_param[6]);
+    if(len_hyper_param > 0){
+        target+= normal_lpdf(mu | hyper_param[1:len_a], hyper_param[(len_a+1):(2*len_a)]);
+        target+= lkj_corr_cholesky_lpdf(L | hyper_param[2*len_a + 1]);
+        target+= cauchy_lpdf(tau |0, hyper_param[2*len_a + 2]);
     }
 
     for(i in 1:m){
