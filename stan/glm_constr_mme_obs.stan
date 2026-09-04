@@ -7,7 +7,7 @@ data {
     cholesky_factor_cov[len_a] J_a;                 // Lower Cholesky decomposition of inverse of Fisher information matrix for each simulation.
     int<lower=0> len_hyper_param;                   // 6 or 0 (if no priors)
     vector[len_hyper_param] hyper_param;            // prior hyper params: mu[1,2]_mu, mu[1,2]_sd, eta, tau_gamma (scale).
-    vector[4] delta_hyper_param;                    // prior hyper params on dissim param: intercept alpha and beta; and slope alpha and beta.
+    vector[2 * len_a] delta_hyper_param;            // prior hyper params on dissim param: intercept alpha and beta; and slope alpha and beta.
 }
 
 parameters {
@@ -39,9 +39,9 @@ model {
         target+= lkj_corr_cholesky_lpdf(L | hyper_param[2*len_a + 1]);
         target+= cauchy_lpdf(tau |0, hyper_param[2*len_a + 2]);
     }
-    
-    target+= beta_lpdf(delta[1] | delta_hyper_param[1], delta_hyper_param[2]);
-    target+= beta_lpdf(delta[2] | delta_hyper_param[3], delta_hyper_param[4]);
+    for(i in 1:len_a){
+        target+= beta_lpdf(delta[i] | delta_hyper_param[2*i - 1], delta_hyper_param[2 * i]);
+    }
 
     for(i in 1:m){
         target+= multi_normal_cholesky_lpdf(b_hat[i] | b[i], J[i]); // "Data" layer
